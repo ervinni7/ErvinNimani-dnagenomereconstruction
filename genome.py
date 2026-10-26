@@ -8,7 +8,7 @@
 #   5. Me konsensusin e reads korrigjon gabimet.
 #   6. Krahason rezultatin me ADN-në e njohur vetëm për verifikim.
 #
-# Termat "read", "k-mer", "backbone" dhe "alignment" janë ruajtur si terma teknikë.
+
 
 from __future__ import annotations
 from collections import Counter, defaultdict
