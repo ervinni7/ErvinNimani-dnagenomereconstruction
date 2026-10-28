@@ -122,3 +122,66 @@ def simulate(genome_length=1800, n_reads=350, read_length=115, error_rate=.01,
         records.append((f'read_{ix+1:04d}', seq))
     rng.shuffle(records)
     return reference, sample, records, true_variants
+@dataclass(frozen=True)
+class Edge:
+    src: int  # ID e orientimit: 2 * indeksi_i_read + (0 përpara / 1 mbrapsht)
+    dst: int
+    shift: int  # pozicioni ku fillon read-i i dytë në raport me të parin
+    target_consumed: int  # pjesa fillestare e read-it B që mbulohet nga mbivendosja
+    overlap: int
+    identity: float
+    votes: int
+
+    @property
+    def score(self):
+        return self.overlap * (self.identity ** 5) + min(self.votes, 10) * .3
+
+
+def oriented_reads(reads):
+    return [s for seq in reads for s in (seq, reverse_complement(seq))]
+
+
+def approximate_overlap(a: str, b: str, estimated_shift: int,
+                        min_overlap: int, max_error: float, padding=7):
+    """Gjen mbivendosjen e përafërt me programim dinamik (edit distance).
+    Fillimi i A dhe fundi i B mund të mbeten jashtë përputhjes pa penalizim.
+    Votat e k-merëve e kufizojnë zonën ku kërkohet mbivendosja.
+    Kthen (zhvendosja, baza të përdorura nga B, mbivendosja, ngjashmëria) ose None."""
+    astart = max(0, estimated_shift - padding)
+    x = a[astart:]
+    # Read-i B duhet të vazhdojë përtej A; kontrollojmë vetëm pjesën që mund të mbivendoset.
+    approx = len(a) - estimated_shift
+    y = b[:min(len(b), approx + padding * 2 + 4)]
+    if len(x) < min_overlap or len(y) < min_overlap:
+        return None
+    # Te dp[i][j], start[i][j] ruan fillimin e pjesës fundore të A që përputhet.
+    prev = list(range(len(y) + 1))
+    prev_start = [0] * (len(y) + 1)
+    for i, ca in enumerate(x, 1):
+        curr = [0] * (len(y) + 1)   # fillimi i A nuk penalizohet
+        curr_start = [i] + [0] * len(y)
+        for j, cb in enumerate(y, 1):
+            choices = ((prev[j - 1] + (ca != cb), prev_start[j - 1]),
+                       (prev[j] + 1, prev_start[j]),
+                       (curr[j - 1] + 1, curr_start[j - 1]))
+            cost, start = min(choices, key=lambda z: z[0])
+            curr[j], curr_start[j] = cost, start
+        prev, prev_start = curr, curr_start
+    best = None
+    for j in range(min_overlap, len(y) + 1):
+        shift = astart + prev_start[j]
+        left_ov = len(a) - shift
+        if left_ov < min_overlap or shift < 3:
+            continue
+        if abs(shift - estimated_shift) > padding + 2:
+            continue
+        if len(b) - j < 3:  # read-i i dytë duhet të zgjatet në të djathtë
+            continue
+        overlap = min(left_ov, j)
+        identity = 1 - prev[j] / max(left_ov, j)
+        if identity < 1 - max_error:
+            continue
+        rank = (overlap * identity ** 6, identity, overlap)
+        if best is None or rank > best[0]:
+            best = (rank, shift, j, overlap, identity)
+    return best[1:] if best else None
