@@ -185,3 +185,48 @@ def approximate_overlap(a: str, b: str, estimated_shift: int,
         if best is None or rank > best[0]:
             best = (rank, shift, j, overlap, identity)
     return best[1:] if best else None
+def build_overlap_graph(sequences, k=11, min_overlap=42, max_error=.09,
+                        max_candidates=8):
+    """Indekson k-merët e reads në të dy orientimet.
+    Kontrollon në detaje vetëm një pjesë të vogël të çifteve kandidate.
+    Grafi është i drejtuar; lidhjet vlerësohen nga gjatësia dhe cilësia e përputhjes."""
+    index = defaultdict(list)
+    for node, s in enumerate(sequences):
+        for p in range(len(s) - k + 1):
+            index[s[p:p+k]].append((node, p))
+    # Heqim k-merët shumë të shpeshtë (zona të përsëritura) për të shmangur shumë krahasime.
+    frequency_cap = max(60, len(sequences) // 5)
+    edges = defaultdict(list)
+    comparisons = 0
+    candidates_seen = 0
+    for node, s in enumerate(sequences):
+        votes = defaultdict(Counter)
+        for p in range(len(s) - k + 1):
+            occurrences = index[s[p:p + k]]
+            if len(occurrences) > frequency_cap:
+                continue
+            for other, q in occurrences:
+                if other // 2 == node // 2:
+                    continue
+                shift = p - q
+                if 3 <= shift <= len(s) - min_overlap + 4 and shift + len(sequences[other]) > len(s) + 2:
+                    votes[other][shift] += 1
+        candidates_seen += len(votes)
+        # Për secilin pasues zgjedhim zhvendosjen me më shumë vota dhe i rendisim kandidatët.
+        ranked = []
+        for other, counts in votes.items():
+            # Shtimet/fshirjet mund të zhvendosin përputhjen 1-2 vende; bashkojmë votat afër.
+            best_shift = max(counts, key=lambda off: sum(n for st, n in counts.items() if abs(st-off) <= 2))
+            support = sum(n for st, n in counts.items() if abs(st-best_shift) <= 2)
+            ranked.append((support, other, best_shift))
+        ranked.sort(reverse=True)
+        for support, other, shift in ranked[:max_candidates]:
+            comparisons += 1
+            result = approximate_overlap(s, sequences[other], shift, min_overlap, max_error)
+            if result:
+                real_shift, b_used, ov, identity = result
+                edges[node].append(Edge(node, other, real_shift, b_used, ov, identity, support))
+        edges[node].sort(key=lambda e: e.score, reverse=True)
+    return edges, {'candidate_pairs': candidates_seen, 'alignments': comparisons,
+                   'overlaps': sum(len(v) for v in edges.values()),
+                   'naive_oriented_comparisons': len(sequences) * (len(sequences) - 2)}
