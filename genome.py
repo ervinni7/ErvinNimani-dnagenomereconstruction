@@ -368,3 +368,109 @@ def build_overlap_graph(sequences, k=11, min_overlap=42, max_error=.09,
     return edges, {'candidate_pairs': candidates_seen, 'alignments': comparisons,
                    'overlaps': sum(len(v) for v in edges.values()),
                    'naive_oriented_comparisons': len(sequences) * (len(sequences) - 2)}
+
+def dfs_backtracking(sequences, edges, tolerance=10, max_steps=None):
+    """Gjen rrugën (backbone) në grafin e mbivendosjeve me DFS dhe BACKTRACKING.
+
+    Problemi: duam një rrugë në graf (read -> read që e vazhdon) që jep sekuencën
+    më të gjatë, pa përdorur të njëjtin read dy herë (si te rruga Hamiltoniane).
+      1. Zgjedhim: nga read-i aktual provojmë me radhë çdo read që e vazhdon
+         (lidhjet më të mira provohen të parat).
+      2. Shkojmë thellë (DFS) derisa rruga të mos vazhdojë më dhe e krahasojmë
+         me rrugën më të mirë të gjetur deri tani.
+      3. Kthehemi mbrapa (backtracking): heqim read-in e fundit dhe provojmë
+         alternativën tjetër. Ndryshe nga greedy, nëse një zgjedhje të çon në
+         rrugë pa dalje, algoritmi nuk ngec, por provon rrugët e tjera.
+
+    Krasitja (pruning): brenda të njëjtit kërkim (nga e njëjta pikë fillimi) çdo read
+    vizitohet vetëm një herë, si te DFS-ja klasike, sepse vazhdimet prej tij janë
+    provuar tashmë. Kjo e mban kohën lineare dhe pengon që rruga të kalojë dy herë
+    nëpër një zonë të përsëritur (gjë që do ta zgjaste ADN-në artificialisht).
+    Një read i vizituar nga një kërkim i mëparshëm rivizitohet vetëm nëse tani
+    arrijmë me rrugë qartësisht më të gjatë (më shumë se `tolerance` baza; dallimet
+    e vogla vijnë nga gabimet e leximit), p.sh. kur fillimi i parë s'ishte fillimi i ADN-së.
+    `max_steps` siguron që kërkimi të përfundojë gjithmonë."""
+    if max_steps is None:
+        max_steps = 100 * len(sequences)  # kufi sigurie, shumë më i madh se nevoja
+    # Numërojmë lidhjet hyrëse: reads pa lidhje hyrëse janë fillime të mundshme të ADN-së.
+    incoming = [0] * len(sequences)
+    for node in edges:
+        for e in edges[node]:
+            incoming[e.dst] += 1
+    starts = []
+    for node in range(len(sequences)):
+        starts.append((incoming[node], node))
+    starts.sort()  # provojmë së pari reads me më pak lidhje hyrëse
+
+    best = {'span': 0, 'path': [], 'links': []}  # rruga më e mirë e gjetur deri tani
+    best_at = {}  # nyja -> (gjatësia me të cilën arritëm tek ajo, kërkimi që e vizitoi)
+    path = []     # nyjet e rrugës aktuale
+    links = []    # lidhjet (Edge) e rrugës aktuale
+    used = set()  # reads që janë tashmë në rrugë (në cilindo drejtim)
+    stats = {'dfs_steps': 0, 'dfs_backtracks': 0, 'dfs_pruned': 0,
+             'dfs_dead_ends': 0, 'dfs_start_nodes': 0, 'dfs_complete': True}
+
+    def dfs(node, span, search):
+        stats['dfs_steps'] += 1
+        if stats['dfs_steps'] > max_steps:
+            stats['dfs_complete'] = False
+            return
+        extended = False      # a e vazhduam rrugën te ndonjë read tjetër?
+        can_continue = False  # a ka të paktën një read të lirë që e vazhdon?
+        for e in edges.get(node, []):
+            read = e.dst // 2
+            if read in used:
+                continue  # read-i është tashmë në rrugë
+            can_continue = True
+            new_span = span + len(sequences[e.dst]) - e.target_consumed
+            if e.dst in best_at:
+                old_span, old_search = best_at[e.dst]
+                if old_search == search or new_span <= old_span + tolerance:
+                    stats['dfs_pruned'] += 1
+                    continue  # krasitje: këtë vazhdim e kemi provuar më parë
+            best_at[e.dst] = (new_span, search)
+            extended = True
+            # 1) Zgjedhim lidhjen.
+            used.add(read)
+            path.append(e.dst)
+            links.append(e)
+            # 2) Vazhdojmë më thellë (DFS).
+            dfs(e.dst, new_span, search)
+            # 3) Backtracking: e anulojmë zgjedhjen dhe provojmë lidhjen tjetër.
+            used.remove(read)
+            path.pop()
+            links.pop()
+            stats['dfs_backtracks'] += 1
+        if not can_continue:
+            stats['dfs_dead_ends'] += 1  # asnjë read i lirë nuk e vazhdon këtë rrugë
+        # Rruga mbaron këtu: e krahasojmë me më të mirën. E kopjojmë vetëm kur është
+        # më e gjatë (jo në çdo hap), përndryshe koha do të rritej në katror.
+        if not extended and span > best['span']:
+            best['span'] = span
+            best['path'] = path[:]
+            best['links'] = links[:]
+
+    # Rekursioni shkon aq thellë sa reads ka rruga; kufiri standard i Python-it (1000)
+    # mund të mos mjaftojë, prandaj e rrisim sipas numrit të reads.
+    if sys.getrecursionlimit() < len(sequences) + 200:
+        sys.setrecursionlimit(len(sequences) + 200)
+
+    for count, start in starts:
+        if start in best_at:
+            continue  # ky read është arritur tashmë nga një fillim më i mirë
+        if stats['dfs_steps'] > max_steps:
+            break
+        stats['dfs_start_nodes'] += 1
+        best_at[start] = (len(sequences[start]), start)
+        used.add(start // 2)
+        path.append(start)
+        dfs(start, len(sequences[start]), start)  # numri i kërkimit = nyja e fillimit
+        used.remove(start // 2)
+        path.pop()
+
+    if not best['path']:
+        raise ValueError('No reads supplied')
+    parts = [sequences[best['path'][0]]]
+    for e in best['links']:
+        parts.append(sequences[e.dst][e.target_consumed:])
+    return ''.join(parts), best['path'], best['links'], stats
