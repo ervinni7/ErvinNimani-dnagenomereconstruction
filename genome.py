@@ -474,3 +474,40 @@ def dfs_backtracking(sequences, edges, tolerance=10, max_steps=None):
     for e in best['links']:
         parts.append(sequences[e.dst][e.target_consumed:])
     return ''.join(parts), best['path'], best['links'], stats
+
+def local_alignment(read: str, reference_window: str, diagonal=12, band=10):
+    """Përputh një read me një zonë të sekuencës duke përdorur edit distance.
+    Skajet e zonës mund të mbeten të papërdorura, pa penalizim.
+    Read-i pritet të fillojë rreth kolonës `diagonal` të zonës, prandaj llogarisim
+    vetëm qelizat në brezin ±band rreth asaj diagonaleje (banded DP).
+    Kthen koston, pozicionet dhe veprimet (veprimi, pozicioni në zonë, pozicioni në read)
+    për bazat (B), shtimet (I) dhe fshirjet (D)."""
+    n, m = len(read), len(reference_window)
+    big = n + m + 1
+    prev = [0] * (m + 1)
+    back = [bytearray(m + 1) for _ in range(n + 1)]
+    for i, base in enumerate(read, 1):
+        curr = [big] * (m + 1)
+        curr[0] = i
+        back[i][0] = 1
+        low = max(1, i + diagonal - band)
+        high = min(m, i + diagonal + band)
+        for j in range(low, high + 1):
+            diag = prev[j-1] + (base != reference_window[j-1])
+            up = prev[j] + 1  # shtim në read
+            left = curr[j-1] + 1  # fshirje në read
+            if diag <= up and diag <= left:
+                curr[j] = diag
+                back[i][j] = 0
+            elif up <= left:
+                curr[j] = up
+                back[i][j] = 1
+            else:
+                curr[j] = left
+                back[i][j] = 2
+        prev = curr
+    end = prev.index(min(prev))
+    cost = prev[end]
+    ops = []
+    i, j = n, end
+    
