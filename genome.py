@@ -510,4 +510,17 @@ def local_alignment(read: str, reference_window: str, diagonal=12, band=10):
     cost = prev[end]
     ops = []
     i, j = n, end
-    
+    while i > 0:
+        operation = back[i][j]
+        if operation == 0:
+            ops.append(('B', j - 1, i - 1))
+            i -= 1
+            j -= 1
+        elif operation == 1:
+            ops.append(('I', j, i - 1))
+            i -= 1
+        else:
+            ops.append(('D', j - 1, None))
+            j -= 1
+    ops.reverse()
+    return cost, j, end, ops
