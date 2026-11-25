@@ -524,3 +524,96 @@ def local_alignment(read: str, reference_window: str, diagonal=12, band=10):
             j -= 1
     ops.reverse()
     return cost, j, end, ops
+
+def polish(backbone, reads, k=12, max_error=.15):
+    """Rivendos TË GJITHA reads mbi backbone dhe ndërton konsensusin.
+    Për çdo read zgjedhim drejtimin (përpara ose mbrapsht) me më shumë k-merë të
+    përbashkët dhe e përputhim vetëm një herë.
+    Vota e çdo baze peshohet me cilësinë e saj (Phred): bazat me cilësi të ulët,
+    që shpesh janë gabime leximi, ndikojnë më pak se bazat e sigurta.
+    Kështu korrigjohen gabimet e leximit dhe ruhen mutacionet e vërteta."""
+    n = len(backbone)
+    idx = defaultdict(list)
+    for j in range(n - k + 1):
+        idx[backbone[j:j + k]].append(j)
+    # Për çdo pozicion: shuma e cilësive për secilën bazë (4 lista të thjeshta, jo një
+    # Counter për pozicion, që të kursejmë memorie te gjenomet e mëdha).
+    weight = {'A': [0] * n, 'C': [0] * n, 'G': [0] * n, 'T': [0] * n}
+    cover = [0] * n          # sa reads kanë një bazë në këtë pozicion
+    del_votes = [0] * n
+    insert_votes = {}        # hapësira -> Counter me sekuencat e shtuara
+    gap_cover = [0] * (n + 1)
+    mapped = 0
+    edits = []
+    for read, quality in reads:
+        if quality is None:  # FASTA: të gjitha bazat kanë të njëjtën peshë
+            quality = chr(DEFAULT_QUALITY + 33) * len(read)
+        # Fillojmë pranë pozicionit ku k-merët identikë japin provën më të fortë.
+        best_read, best_quality, best_offset, best_support = None, None, 0, 0
+        for orientation, orientation_quality in ((read, quality),
+                                                 (reverse_complement(read), quality[::-1])):
+            positions = Counter()
+            for p in range(len(orientation) - k + 1):
+                for j in idx.get(orientation[p:p + k], [])[:15]:
+                    positions[j-p] += 1
+            if not positions:
+                continue
+            offset, support = positions.most_common(1)[0]
+            if support > best_support:
+                best_read, best_quality = orientation, orientation_quality
+                best_offset, best_support = offset, support
+        if best_read is None:
+            continue
+        left = max(0, best_offset - 12)
+        right = min(n, best_offset + len(best_read) + 12)
+        if right <= left:
+            continue
+        cost, rel_start, rel_end, ops = local_alignment(best_read, backbone[left:right],
+                                                        best_offset - left)
+        if cost > max(3, round(len(best_read) * max_error)):
+            continue
+        start, end = left + rel_start, left + rel_end
+        mapped += 1
+        edits.append(cost)
+        ins_per_gap = {}
+        for action, local_j, read_i in ops:
+            pos = left + local_j
+            if action == 'B':
+                weight[best_read[read_i]][pos] += ord(best_quality[read_i]) - 33
+                cover[pos] += 1
+            elif action == 'D':
+                del_votes[pos] += 1
+            else:
+                ins_per_gap[pos] = ins_per_gap.get(pos, '') + best_read[read_i]
+        for gap in range(max(0, start + 1), min(n, end) + 1):
+            gap_cover[gap] += 1
+        for gap in ins_per_gap:
+            if gap not in insert_votes:
+                insert_votes[gap] = Counter()
+            insert_votes[gap][ins_per_gap[gap]] += 1
+    output = []
+    corrections = 0
+    for i in range(n + 1):
+        # Reads që kalojnë mbi hapësirën i mund të mbështesin një sekuencë të shtuar.
+        if i in insert_votes:
+            inserted, count = insert_votes[i].most_common(1)[0]
+            if count > gap_cover[i] / 2 and (i < n or count > 1):
+                output.append(inserted)
+                corrections += len(inserted)
+        if i == n:
+            break
+        if del_votes[i] > cover[i] and del_votes[i] > 1:
+            corrections += 1
+            continue
+        old = backbone[i]
+        consensus = old
+        best_weight = 0
+        for base in DNA:  # baza me peshën (cilësinë) më të madhe fiton
+            if weight[base][i] > best_weight:
+                consensus = base
+                best_weight = weight[base][i]
+        output.append(consensus)
+        if consensus != old:
+            corrections += 1
+    return ''.join(output), {'reads_mapped': mapped, 'consensus_changes': corrections,
+                             'mean_alignment_edits': round(statistics.mean(edits), 3) if edits else None}
