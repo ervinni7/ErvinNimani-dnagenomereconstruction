@@ -330,8 +330,13 @@ def build_overlap_graph(sequences, k=11, min_overlap=42, max_error=.09,
     for node, s in enumerate(sequences):
         for p in range(0, len(s) - k + 1, stride):
             index[s[p:p+k]].append((node, p))
-    # Heqim k-merët shumë të shpeshtë (zona të përsëritura) për të shmangur shumë krahasime.
-    frequency_cap = max(60, len(sequences) // 5)
+        # Heqim k-merët shumë të shpeshtë: një k-mer që shfaqet më shumë se 10 herë mbi
+    # mesataren vjen nga një zonë e përsëritur (p.sh. elementet REP te E. coli, me qindra
+    # kopje) dhe do të krijonte shumë çifte kandidate të rreme.
+    total = 0
+    for positions in index.values():
+        total += len(positions)
+    frequency_cap = max(60, 10 * total // max(1, len(index)))
     edges = defaultdict(list)
     comparisons = 0
     candidates_seen = 0
