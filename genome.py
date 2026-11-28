@@ -622,3 +622,69 @@ def polish(backbone, reads, k=12, max_error=.15):
             corrections += 1
     return ''.join(output), {'reads_mapped': mapped, 'consensus_changes': corrections,
                              'mean_alignment_edits': round(statistics.mean(edits), 3) if edits else None}
+
+def banded_alignment(a, b, band, need_ops=True):
+    """Needleman-Wunsch (përputhje globale) që llogarit vetëm qelizat me |i - j| <= band.
+    Ruhet vetëm brezi: qeliza (i, j) ruhet te indeksi k = j - i + band, prandaj memoria
+    është n * (2 * band + 1) dhe jo n * m (e rëndësishme për gjenomet e mëdha).
+    Kthen (kostoja, veprimet). Veprimet:
+      ('=', i, j) baza të njëjta, ('X', i, j) zëvendësim,
+      ('D', i, j) a[i] mungon te b, ('I', i, j) b[j] është shtuar para a[i].
+    Me need_ops=False kthehet vetëm kostoja (pa ruajtur veprimet)."""
+    n, m = len(a), len(b)
+    width = 2 * band + 1
+    big = n + m + 1
+    # Rreshti 0: për të marrë b[:j] pa asnjë bazë nga a duhen j shtime (veprimi 2).
+    prev = [big] * width
+    first_row = bytearray(width)
+    for j in range(min(m, band) + 1):
+        prev[j + band] = j
+        first_row[j + band] = 2
+    moves = [first_row]  # moves[i][k] = veprimi i zgjedhur te qeliza (i, j = i + k - band)
+    for i in range(1, n + 1):
+        curr = [big] * width
+        row = bytearray(width)
+        low = max(0, band - i)               # k ku j = 0
+        high = min(width - 1, m - i + band)  # k ku j = m
+        for k in range(low, high + 1):
+            j = i + k - band
+            if j == 0:
+                curr[k] = i  # vetëm fshirje
+                row[k] = 1   # 1 = fshirje
+                continue
+            cost = prev[k] + (a[i - 1] != b[j - 1])  # 0 = përputhje ose zëvendësim
+            move = 0
+            if k + 1 < width and prev[k + 1] + 1 < cost:
+                cost = prev[k + 1] + 1
+                move = 1
+            if k > 0 and curr[k - 1] + 1 < cost:
+                cost = curr[k - 1] + 1
+                move = 2
+            curr[k] = cost
+            row[k] = move
+        if need_ops:
+            moves.append(row)
+        prev = curr
+    cost = prev[m - n + band]
+    if not need_ops:
+        return cost, None
+    # Kthehemi nga qeliza e fundit drejt fillimit për të gjetur veprimet (traceback).
+    ops = []
+    i, j = n, m
+    while i > 0 or j > 0:
+        move = moves[i][j - i + band]
+        if move == 0:
+            if a[i - 1] == b[j - 1]:
+                ops.append(('=', i - 1, j - 1))
+            else:
+                ops.append(('X', i - 1, j - 1))
+            i -= 1
+            j -= 1
+        elif move == 1:
+            ops.append(('D', i - 1, j))
+            i -= 1
+        else:
+            ops.append(('I', i, j - 1))
+            j -= 1
+    ops.reverse()
+    return cost, ops
